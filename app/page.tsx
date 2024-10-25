@@ -1,101 +1,233 @@
-import Image from "next/image";
+"use client";
+
+import { Button, Listbox, ListboxItem, Textarea } from "@nextui-org/react";
+import axios from "axios";
+import { SnackbarProvider } from "notistack";
+import { useRef, useState } from "react";
+import { PiSpeakerHighFill } from "react-icons/pi";
 
 export default function Home() {
-  return (
-    <div className="grid grid-rows-[20px_1fr_20px] items-center justify-items-center min-h-screen p-8 pb-20 gap-16 sm:p-20 font-[family-name:var(--font-geist-sans)]">
-      <main className="flex flex-col gap-8 row-start-2 items-center sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={180}
-          height={38}
-          priority
-        />
-        <ol className="list-inside list-decimal text-sm text-center sm:text-left font-[family-name:var(--font-geist-mono)]">
-          <li className="mb-2">
-            Get started by editing{" "}
-            <code className="bg-black/[.05] dark:bg-white/[.06] px-1 py-0.5 rounded font-semibold">
-              app/page.tsx
-            </code>
-            .
-          </li>
-          <li>Save and see your changes instantly.</li>
-        </ol>
+  const [isRecordingPatient, setIsRecordingPatient] = useState(false);
+  const [isRecordingDoctor, setIsRecordingDoctor] = useState(false);
+  const [patientMessages, setPatientMessages] = useState<JSON[]>([]);
+  const [doctorMessages, setDoctorMessages] = useState<JSON[]>([]);
+  const [summary, setSummary] = useState("");
 
-        <div className="flex gap-4 items-center flex-col sm:flex-row">
-          <a
-            className="rounded-full border border-solid border-transparent transition-colors flex items-center justify-center bg-foreground text-background gap-2 hover:bg-[#383838] dark:hover:bg-[#ccc] text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
+  const patientMediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const doctorMediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const patientAudioChunksRef = useRef<Blob[]>([]);
+  const doctorAudioChunksRef = useRef<Blob[]>([]);
+
+  const startPatientRecording = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mediaRecorder = new MediaRecorder(stream);
+
+      mediaRecorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          patientAudioChunksRef.current.push(event.data);
+        }
+      };
+
+      mediaRecorder.onstop = () => {
+        const audioBlob = new Blob(patientAudioChunksRef.current, {
+          type: "audio/wav",
+        });
+        patientAudioChunksRef.current = [];
+        sendAudioToAPI(audioBlob, "patient");
+      };
+
+      mediaRecorder.start();
+      patientMediaRecorderRef.current = mediaRecorder;
+      setIsRecordingPatient(true);
+    } catch (error) {
+      console.error("Error starting patient recording:", error);
+    }
+  };
+
+  const stopPatientRecording = () => {
+    if (patientMediaRecorderRef.current) {
+      patientMediaRecorderRef.current.stop();
+      setIsRecordingPatient(false);
+    }
+  };
+
+  const startDoctorRecording = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mediaRecorder = new MediaRecorder(stream);
+
+      mediaRecorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          doctorAudioChunksRef.current.push(event.data);
+        }
+      };
+
+      mediaRecorder.onstop = () => {
+        const audioBlob = new Blob(doctorAudioChunksRef.current, {
+          type: "audio/wav",
+        });
+        doctorAudioChunksRef.current = [];
+        sendAudioToAPI(audioBlob, "doctor");
+      };
+
+      mediaRecorder.start();
+      doctorMediaRecorderRef.current = mediaRecorder;
+      setIsRecordingDoctor(true);
+    } catch (error) {
+      console.error("Error starting doctor recording:", error);
+    }
+  };
+
+  const stopDoctorRecording = () => {
+    if (doctorMediaRecorderRef.current) {
+      doctorMediaRecorderRef.current.stop();
+      setIsRecordingDoctor(false);
+    }
+  };
+
+  const sendAudioToAPI = async (audioBlob: Blob, role: string) => {
+    const formData = new FormData();
+    formData.append("file", audioBlob, `${role}_recording.wav`);
+
+    try {
+      const response = await fetch("/api/stt", {
+        method: "POST",
+        body: formData,
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        if (role === "patient") {
+          setPatientMessages((prevMessages) => [
+            ...prevMessages,
+            data.transcript,
+          ]);
+        } else {
+          setDoctorMessages((prevMessages) => [
+            ...prevMessages,
+            data.transcript,
+          ]);
+        }
+      } else {
+        console.error(`Failed to transcribe ${role} audio`);
+      }
+    } catch (error) {
+      console.error(`Error sending ${role} audio:`, error);
+    }
+  };
+
+  const handlePlayAudio = async (text: string) => {
+    try {
+      const response = await fetch("/api/tts", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ text }),
+      });
+
+      if (response.ok) {
+        const audioBlob = await response.blob();
+        const audioUrl = URL.createObjectURL(audioBlob);
+        const audio = new Audio(audioUrl);
+        audio.play();
+      } else {
+        console.error("Failed to get TTS audio");
+      }
+    } catch (error) {
+      console.error("Error fetching TTS audio:", error);
+    }
+  };
+
+  const handleGetSummary = async () => {
+    try {
+      const patientConversation = patientMessages.join(" ");
+      const doctorConversation = doctorMessages.join(" ");
+
+      const response = await axios.post("/api/summarize", {
+        patient: patientConversation,
+        doctor: doctorConversation,
+      });
+
+      if (response.status === 200) {
+        setSummary(response.data.summary);
+      }
+    } catch (error) {
+      console.error("Error getting summary:", error);
+    }
+  };
+
+  return (
+    <div>
+      <div className="w-full flex flex-col lg:flex-row">
+        <SnackbarProvider />
+
+        {/* Patient Section */}
+        <div className="w-full lg:w-1/2 p-4 border-b lg:border-b-0 lg:border-r border-gray-300">
+          <h2 className="text-2xl mb-4">Patient</h2>
+          <Listbox aria-label="Patient Transcripts">
+            {patientMessages.map((message, index) => (
+              <ListboxItem
+                key={index}
+                variant="bordered"
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                onPress={() => handlePlayAudio(message as any)}
+              >
+                <div className="flex items-center justify-between">
+                  <span>{message.toString()}</span>
+                  <PiSpeakerHighFill />
+                </div>
+              </ListboxItem>
+            ))}
+          </Listbox>
+          <Button
+            onPress={
+              isRecordingPatient ? stopPatientRecording : startPatientRecording
+            }
+            className="w-full"
           >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={20}
-              height={20}
-            />
-            Deploy now
-          </a>
-          <a
-            className="rounded-full border border-solid border-black/[.08] dark:border-white/[.145] transition-colors flex items-center justify-center hover:bg-[#f2f2f2] dark:hover:bg-[#1a1a1a] hover:border-transparent text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 sm:min-w-44"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Read our docs
-          </a>
+            {isRecordingPatient
+              ? "Stop Patient Recording"
+              : "Start Patient Recording"}
+          </Button>
         </div>
-      </main>
-      <footer className="row-start-3 flex gap-6 flex-wrap items-center justify-center">
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/file.svg"
-            alt="File icon"
-            width={16}
-            height={16}
-          />
-          Learn
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/window.svg"
-            alt="Window icon"
-            width={16}
-            height={16}
-          />
-          Examples
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/globe.svg"
-            alt="Globe icon"
-            width={16}
-            height={16}
-          />
-          Go to nextjs.org →
-        </a>
-      </footer>
+
+        {/* Doctor Section */}
+        <div className="w-full lg:w-1/2 p-4">
+          <h2 className="text-2xl mb-4">Doctor</h2>
+          <Listbox aria-label="Doctor Transcripts">
+            {doctorMessages.map((message, index) => (
+              <ListboxItem key={index}>
+                <div className="flex items-center justify-between">
+                  <span>{message.toString()}</span>
+                  <PiSpeakerHighFill />
+                </div>
+              </ListboxItem>
+            ))}
+          </Listbox>
+          <Button
+            onPress={
+              isRecordingDoctor ? stopDoctorRecording : startDoctorRecording
+            }
+            className="w-full"
+          >
+            {isRecordingDoctor
+              ? "Stop Doctor Recording"
+              : "Start Doctor Recording"}
+          </Button>
+        </div>
+      </div>
+
+      <Button className="m-4 mt-8" onPress={handleGetSummary}>
+        Summarize conversation
+      </Button>
+      <Textarea
+        className="m-4"
+        placeholder="Summary of conversation"
+        isReadOnly
+        value={summary}
+      />
     </div>
   );
 }
